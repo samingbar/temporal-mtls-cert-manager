@@ -1,0 +1,28 @@
+{
+  "name": "temporal-mtls-cert-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Temporal TypeScript Credential entity with simulated mTLS CA rollover",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test --test-concurrency=1 dist/test/*.test.js",
+    "demo": "npm run build && node dist/demos/credential-supervisor/demo.js",
+    "worker:demo": "npm run build && node dist/demos/credential-supervisor/worker.js",
+    "ctl": "node dist/demos/credential-supervisor/cli.js"
+  },
+  "dependencies": {
+    "@temporalio/client": "1.25.0",
+    "@temporalio/common": "1.25.0",
+    "@temporalio/testing": "1.25.0",
+    "@temporalio/worker": "1.25.0",
+    "@temporalio/workflow": "1.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,332 @@
+Operational Concern Specification: Credential Supervisor
+Overview
+Concern Name: Credential Status: Implementing Owner: TODO(author): assign Created: 2026-09-03 Updated: 2026-09-09
+
+Executive Summary
+Customers often miss the courtesy emails sent by Temporal to rotate credentials and often do not have their own automation to respond. This results in application downtime, buggy manual processes, and support churn.
+
+A Credential can be encapsulated in such a way to orchestrate automate credential rollover required to connect to Temporal Cloud Namespaces without any downtime. It makes a slice of credential material durable.
+
+It will use Temporal itself to:
+
+Safely establish trust with Temporal namespace.
+Guarantee the rollout of that trust to associated Temporal SDK Clients.
+Retire old credentials once they are no longer needed.
+It will be flexible enough to support:
+
+Multiple credential types, though Certificate Authority (CA) TLS Certificates are prioritized for now
+Temporal Namespace collections
+different PKI toolchains and integrations
+It will not:
+
+Coordinate with other Credentials supervising the same Temporal Namespaces
+Implement guarantees inside the target processes for connectivity
+Act as a operational probe/monitor for connectivity to Temporal Namespaces
+Goals & Success Criteria
+Primary Goals
+Goal 1: Manage Certificate Authority (CA) trust for a scoped set of Temporal Namespaces
+Goal 2: Integrate with other PKI infrastructure
+Goal 3: Trigger and monitor rollout of trust to Temporal SDK Clients without downtime
+Goal 4: Safely retire old credentials once they are no longer needed
+Acceptance Criteria
+ A timed rollout of a new CA completely replaces the old CA
+ A manual rollout of a new CA replaces the old CA
+ Workloads are not impacted by the rollout
+ The Temporal Namespaces under management can be modified safely
+Current State (As-Is)
+What happens today without this?
+Courtesy emails are sent to remind customers to rotate credentials, but these are ignored unseen.
+
+Pain points
+Certificates are not rotated in a timely manner so connections fail. Downtime results.
+Manual processes with Temporal UI and PKI infrastructure are required to rotate credentials, leading to missed steps or bugs.
+Desired State (To-Be)
+Approach Overview
+A Credential acts as an interactive, behavioral entity for an otherwise static bit of credential material such as a TLS certificate or API Key. A Credential will be initially scoped and activated once by the maintainers of the Temporal Namespaces it interacts with. It represents exactly one credential; e.g. a TLS certificate that acts as a CA for an arbitrary number of Temporal Namespaces. A Temporal SDK Worker will need to always run for the Credential to perform its duties and maintain its integrity. A Credential needs appropriate permissions to access any resources it mutates outside of its own compute boundaries (e.g. the Kubernetes Namespace where it is running). The current state and progress of each Credential operation should be visible to eligible maintainers. The Credential's scope may be safely increased or decreased at any time.
+
+A Credential will schedule or force rotations within its current scope, performing these steps:
+
+Coordinate and read new credential material (e.g. a new public key) from arbitrary PKI infrastructure
+Establish trust with the scoped Temporal Namespaces while retaining the old trust
+Cascade the new trust to related Temporal SDK Clients
+Remove old trust from related Temporal Namespaces
+Retire the old trust once it is no longer needed
+Schedule the next rollover to repeat this process
+Key Capabilities
+Capability 1: Temporal Namespaces placed within scope are arbitrary. They can be all, many, or one.
+Capability 2: A Credential can be interacted with directly, run on a schedule or on-demand, and abstracts away compute and PKI implementation details.
+Capability 3: A Credential can represent different credential types, including Certificate Authority (CA) and TLS certificates or API Keys.
+Capability 4: A Credential can support compensations, such as stop or rollback, in the event of a failure.
+Technical Approach
+Design Decisions
+Decision	Rationale	Alternative Considered
+A Credential is top-level and user facing.	A single point of entry is needed to interact and view credential concerns within a scoped collection of Namespaces.	Singular credential supervision across all Temporal Namespaces
+A Credential represents exactly one concrete credential.	The credential it manages is itself the root of other credentials.	Multiple credentials can be managed by a single CredentialSupervisor but leads to complex failure conditions.
+A Credential only impacts the deployments in the Kubernetes cluster in which is running.	Cross-cluster support leads to confusion about who is the authority for the credential.	A centralized platform cluster could speak into services that need the credential
+A Credential orchestrates the high-level process but does not have an opinion about PKI toolchain or deployment implementations.	CredentialSupervisor needs to be flexible with integration in customer environment.	Kubernetes-specific or Hashicorp specific concerns leaking into steps.
+A Credential is not a monitoring or health check tool, but can inform such a probe.	It encapsulates the steps needed to orchestrate a safe rollover but makes no guarantees about connections impacted by it.	CredentialSupervisor could maintain probes and try to correct faults with a rollover.
+The Credential Workflow has no Workflow Execution or Run Timeout.	It is a long-lived entity. Business waits and child rotation work use explicit timers, and Continue-As-New bounds Event History.	An infrastructure timeout would turn entity lifetime into an accidental failure policy.
+Credential cancellation requests cancellation of an active Rotate child and waits for its bounded revert path.	Rotate owns compensation for work it has performed. The parent must not abandon that work on shutdown.	A detached child can outlive the entity that owns the operation and make final state ambiguous.
+This implementation phase stops at Workflow and Activity contracts plus the Credential Workflow.	The durable boundary can be tested with fake adapters before external credentials and cluster access are introduced.	Implementing external adapters in the same phase increases review scope and requires live environment details.
+Component Design
+Messages
+Package: com.acme.temporalcredentialoperations.contracts.apps.domain.credential.v1
+Module: java/temporalcredentialoperations
+Structure:
+Public, hand-authored Java data transfer object (DTO) classes, not records.
+One request and response envelope per Workflow, Update, Query, Activity, and child Workflow operation.
+No serializer-specific annotations or configuration in the contract package.
+Collection inputs are canonicalized before their order can affect Workflow commands.
+Credential - Temporal Workflow
+Purpose: Acts as a durable, extensible credential entity enriched with behaviors targeting resources within its scope.
+Module: java/apps/apps-core
+Package: com.acme.temporalcredentialoperations.apps.core.credential
+Responsibilities:
+Schedules operations pertaining to protecting its integrity; e.g. credential rotation.
+Manages the scope the credential impacts.
+Exposes the current credential state and history of credential operations.
+Ensure the process is safe, minimally impacts deployment availability, and gracefully handles failures.
+VersioningBehavior: PINNED
+ContinueAsNew: YES, after each successful Rotate. Only the main Workflow method may issue Continue-As-New, after in-flight handlers have drained.
+Identity:
+{credentialType}-{environment}-{teamName}-{scopeKey} where
+credentialType: is either certificate or api-key
+environment: the environment the credential is used in
+teamName: the name of the team that owns the credential
+scopeKey: the scope key the credential impacts. Could be a TemporalNamespace, a hash of TemporalNamespaceNames, a Temporal ProjectID, or other.
+All identity components and rotation operation IDs must be non-sensitive, business-safe identifiers because they are visible in Temporal operational surfaces.
+Messages:
+ActivateCertificateRequest
+teamName:string
+scopeKey:string
+credentialType:string
+environment:string
+credentialOptions:CredentialOptions
+temporalNamespaceOptions:TemporalNamespaceOptions
+kubernetesOptions:KubernetesOptions
+executionOptions:ExecutionOptions
+Internal Continue-As-New carryover state. A caller must provide a complete initial request and must not depend on a concurrent Update to complete start input.
+CredentialOptions
+ttl:Duration, requested lifetime of issued credential material; default 90 days
+rotationOffset:Duration; default 14 days
+TemporalNamespaceOptions
+Explicit namespace names
+Optional namespace tag selector
+The effective scope is the deduplicated union of both sources.
+KubernetesOptions
+Deployment selectors with an optional Kubernetes namespace and a label selector
+Matches are deduplicated by Kubernetes namespace and Deployment name.
+ExecutionOptions
+rotationTimeout:Duration; default 30 minutes
+Optional SuspendRequest. When present at initial start, the Workflow enters SUSPENDED, schedules no rotation, and requires an explicit activate Update. Activation clears this option before a later Continue-As-New.
+DeactivateRequest
+PutTemporalNamespacesRequest
+temporalNamespaceOptions:TemporalNamespaceOptions; replaces the complete prior Temporal Namespace scope
+PutTemporalNamespacesResponse
+PutOptionsRequest
+Optional CredentialOptions, KubernetesOptions, and ExecutionOptions
+PutOptionsResponse
+RotateRequest
+Required caller-supplied operationId. The Workflow retains operation IDs across Continue-As-New so caller retries cannot start the same business rotation twice.
+RotateResponse
+RestoreRequest
+RestoreResponse
+SuspendRequest
+SuspendResponse
+GetStateRequest
+GetStateResponse
+Outputs:
+None
+API/Handlers:
+execute(ActivateCertificateRequest):void - @WorkflowMethod; starts the entity with complete input.
+activate(ActivateCertificateRequest):void - @Update; resumes a suspended or failed entity and clears a stored startup suspension request.
+deactivate(DeactivateRequest):void - @Update; stops accepting new rotations, waits for an active rotation to finish, then completes the Credential Workflow.
+putTemporalNamespaces(PutTemporalNamespacesRequest):PutTemporalNamespacesResponse - @Update; replaces the complete namespace scope.
+putOptions(PutOptionsRequest):PutOptionsResponse - @Update; changes options for the next decision or rotation. An active child continues with its original immutable snapshot.
+rotate(RotateRequest):RotateResponse - @Update; validates and durably queues a manual rotation, then returns an acceptance response without waiting for the child result.
+restore(RestoreRequest):RestoreResponse - @Update; invokes the requestRotateRevert Activity, which uses a Temporal client to call the active Rotate child's revert Update, then records the response. The Java SDK does not support issuing a Workflow Update directly from one Workflow to another.
+suspend(SuspendRequest):SuspendResponse - @Update; waits for an active rotation to reach its terminal safe boundary, enters SUSPENDED, and requires activate before scheduling resumes.
+getState(GetStateRequest):GetStateResponse - @Query; returns current state and, by default, the complete rotation summary history.
+TemporalSDK: Java
+Behaviors:
+State: Capture Activity responses, child Workflow responses, Update outcomes, and attributable failures in one initialized state object. Temporal Event History is authoritative for execution state. Temporal Cloud and Kubernetes remain authoritative for external inventory.
+Steps:
+Local Activity: mergeOptions is the first Workflow action in every run. It overlays request values on environment configuration, validates the merged value, and returns the effective options used by Workflow code.
+Activities in parallel: fetch the scoped Temporal Cloud namespace certificate inventory and the matching local Kubernetes Deployment inventory. With Kubernetes integration disabled for local development, the future adapter returns an empty, explicitly skipped inventory.
+Compute the next rotation from the earliest managed namespace certificate expiration minus rotationOffset. Clamp a past recommendation to immediate. If no managed namespace has a certificate, remain ACTIVE with no scheduled rotation until scope or options change.
+Wait for the next scheduled instant or an accepted Update. Refresh externally owned inventory immediately before a rotation decision.
+Start a Rotate child with a stable child Workflow ID derived from Credential identity and the required operation ID. The child receives an immutable StartRotateRequest snapshot. Scope or option changes made while it runs apply to the next rotation.
+If rotationTimeout elapses, request child cancellation. Rotate owns its internal revert. Wait no longer than another rotationTimeout for cancellation and revert to finish, then record the bounded outcome.
+On native Credential cancellation, use the same child cancellation and bounded-wait path before allowing cancellation to close the parent.
+After a successful child result, append the complete summary to state, drain in-flight handlers, and Continue-As-New with current options, deduplication IDs, and the complete summary history. deactivate completes instead of continuing as new.
+Rotate - Temporal Workflow
+Purpose: Ensures the lifecycle of a credential rotation.
+Module: java/apps/apps-core
+Package: com.acme.temporalcredentialoperations.apps.core.credential
+Responsibilities:
+Coordinates integration of Temporal Namespaces authentication, PKI infrastructure, and application deployment.
+Ensure the process is safe, minimally impacts deployment availability, and gracefully handles failures.
+Handles appropriate compensations in the event of a failure.
+Reports on rotation lifecycle and status.
+Identity:
+rotate-{credentialType}-{environment}-{teamName}-{scopeKey}-{operationId} where
+credentialType: is either certificate or api-key
+environment: is either dev, test, prod, or staging
+teamName: is the name of the team responsible for the credential
+scopeKey: is a unique identifier for the scope of the credential
+operationId: is the stable caller-supplied business operation identifier
+VersioningBehavior: PINNED
+ContinueAsNew: NO
+Messages:
+StartRotateRequest: immutable snapshot of Credential identity, effective options, refreshed namespace certificate inventory, refreshed Kubernetes Deployment inventory, required operation ID, reason, and requester.
+GetRotationStateRequest, including whether failure detail is requested
+GetRotationStateResponse
+RevertRotateRequest and RevertRotateResponse
+CancelRotateRequest and CancelRotateResponse
+API/Handlers:
+execute(StartRotateRequest):GetRotationStateResponse - @WorkflowMethod
+revert(RevertRotateRequest):RevertRotateResponse - @Update
+cancel(CancelRotateRequest):CancelRotateResponse - @Update
+getState(GetRotationStateRequest):GetRotationStateResponse - @Query
+Implementation boundary: This phase defines only the contracts and Workflow interface required by Credential. It does not provide or register a Rotate Workflow implementation.
+Credential Activities
+Owner package: com.acme.temporalcredentialoperations.apps.core.credential
+Contract messages: com.acme.temporalcredentialoperations.contracts.apps.domain.credential.v1
+Operations:
+mergeOptions(MergeOptionsRequest):MergeOptionsResponse as a Local Activity
+getTemporalNamespaceCertificates(GetTemporalNamespaceCertificatesRequest):GetTemporalNamespaceCertificatesResponse
+getKubernetesDeployments(GetKubernetesDeploymentsRequest):GetKubernetesDeploymentsResponse
+requestRotateRevert(RequestRotateRevertRequest):RequestRotateRevertResponse; the future adapter addresses the active child by Workflow ID and issues its revert Update through a Temporal client, using the rotation operation ID as the stable Update deduplication key across Activity retries
+Implementation boundary: This phase defines these Activity interfaces and their operation envelopes. Concrete Temporal Cloud Operations API and Kubernetes adapters, their runtime configuration, and production Worker registration are deferred to a later implementation phase.
+CredentialOperations Worker
+Purpose: Runs a Credential Workflow and a Rotate Workflow.
+Module: java/apps/apps-workers
+Package: com.acme.temporalcredentialoperations.apps.worker
+Configuration:
+taskQueue: credentialoperations
+namespace: temporal-operations
+workerDeployment: credential-operations
+Responsibilities:
+Runs Credential Workflows and Rotate Workflows
+Supports a VaultPKIKey dedicated to the Credential Workflows.
+Implementation boundary: Worker registration remains deferred until the concrete Activities and Rotate Workflow implementation exist.
+Identity:
+credential-operations-{credentialType}-{environment}-{teamName}-{scopeKey} where
+credentialType:
+Configuration / Deployment
+Kubernetes API Access From The Workflow
+Decision: The Credential and Rotate Workflows do not call the Kubernetes API directly. They schedule Activities on the CredentialOperations Worker, and those Activities use the official Kubernetes Java client to perform all Kubernetes reads and mutations. This keeps network I/O, ServiceAccount token access, wall-clock time, and API retries outside deterministic Workflow code.
+
+Client configuration: The Java client uses in-cluster configuration. It discovers the local API server and authenticates with the projected token and cluster CA for the Pod's temporal-operations-sa ServiceAccount. The Worker does not mount a kubeconfig or hold credentials for another cluster. Typed clients are used for core Secret and apps/v1 Deployment resources; the custom-objects client is used for secrets.hashicorp.com/v1beta1 VaultPKISecret resources.
+
+Kustomize boundary: Kustomize is deploy-time tooling only. It renders and applies the Worker Deployment, ServiceAccount, ClusterRole, and ClusterRoleBinding. Neither Workflow nor Activity code shells out to kubectl or kustomize, and those binaries are not runtime dependencies of the Worker image.
+
+Activity operations: The Vault-backed implementation performs the following calls through the Java client:
+
+| Operation | Kubernetes access | Purpose | |-----------|-------------------|---------| | Discover managed certificate resources | Cluster-wide list of VaultPKISecret resources using credentials.temporal.io/ca-team=<team> as the label selector | Finds the live workload inventory for this team and reads each resource's destination Secret and spec.rolloutRestartTargets | | Resolve configured Deployment selectors | Cluster-wide list of Deployment resources, only when KubernetesOptions.DeploymentSelectors is configured | Supports the generic Credential inventory described above; the Vault path derives target names from rolloutRestartTargets instead | | Capture and verify rollout state | get each named target Deployment | Captures the pre-cascade generation and verifies the later rollout reached the new generation with all desired replicas available | | Force immediate VSO reissue | patch each selected VaultPKISecret, then delete its destination Secret | Records the rotation attempt and causes Vault Secrets Operator (VSO) to recreate the missing Secret; a missing Secret is treated as an idempotent success | | Verify VSO and certificate state | get the VaultPKISecret and destination Secret | Checks the VSO Ready condition and confirms that tls.crt was issued by the expected new CA |
+
+The Credential Worker does not patch application Deployment resources. VSO performs that patch from the VaultPKISecret's rolloutRestartTargets after it writes changed Secret data. The Credential Worker only reads Deployment state to verify the resulting rollout.
+
+Failure and retry behavior: Kubernetes calls are bounded Activities with explicit timeouts. Transient API server, throttling, and transport failures are retryable. Invalid selectors, missing rollout targets, malformed VaultPKISecret resources, and authorization failures are configuration or policy failures and must be recorded in Workflow state rather than retried indefinitely. Mutating Activities must be safe under Temporal's at-least-once Activity execution: patches carry a stable rotation identifier, and deleting an already-absent destination Secret succeeds.
+
+CredentialOperations Kubernetes Deployment
+Purpose: Runs a Credential Workflow and a Rotate Workflow.
+Responsibilities:
+Runs Credential Worker that executes Credential Workflows, Rotate Workflows and related Activities or Nexus Operations
+Supports a VaultPKIKey dedicated to the Credential Worker replicas.
+Namespace: temporal-operations
+Deployment:
+certificate-operations: KubernetesDeployment
+replicaCount: 3
+Runtime Kubernetes identity:
+serviceAccountName: temporal-operations-sa
+In-cluster Kubernetes API access only; no cross-cluster kubeconfig
+Role-Based Access Control (RBAC):
+temporal-operations-sa: Kubernetes ServiceAccount
+credential-operations-kubernetes: ClusterRole
+credential-operations-kubernetes: ClusterRoleBinding
+The baseline cluster-wide grant is:
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: temporal-operations-sa
+  namespace: temporal-operations
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: credential-operations-kubernetes
+rules:
+  - apiGroups: ["secrets.hashicorp.com"]
+    resources: ["vaultpkisecrets"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: credential-operations-kubernetes
+subjects:
+  - kind: ServiceAccount
+    name: temporal-operations-sa
+    namespace: temporal-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: credential-operations-kubernetes
+This is cluster-scoped because the Worker discovers and verifies workloads in namespaces it does not know before discovery. The label selector narrows client behavior, but Kubernetes Role-Based Access Control (RBAC) does not enforce that label as an authorization boundary. This role can therefore read or mutate the listed resource types outside the owning team's scope. In particular, get on Secret returns the complete object, including tls.key, even though the Activity only inspects tls.crt. Treat temporal-operations as a high-trust namespace and restrict who can deploy or exec into these Pods. A customer that cannot accept this cluster-wide grant must use namespace-scoped Role and RoleBinding resources plus an explicit workload inventory; that is a different discovery trade-off from the cluster-wide label-based default.
+
+Vault
+Purpose: Stores the Vault PKI Key used by the Credential Workflows.
+Requirements:
+Stores the Vault PKI Key used by the Credential Workflows.
+PKI must be enabled.
+Installed by Helm.
+VSO must be installed.
+Terraform
+Purpose: Manages the TemporalNamespace resources.
+Requirements:
+unknown
+[Config files, CRDs, environment variables, deployment topology involved.]
+
+Deliverables
+Every concern produces both of the following. Be concrete — these sections are what "Implementing" actually builds.
+
+Runbook
+Audience: [Who reads this — platform team, on-call operator, etc.]
+Lives at: runbooks/credential-supervisor/
+Outline:
+[Step group 1 — one line each]
+[Step group 2]
+Each step must state: the command/action, and how to verify it worked.
+Demo
+Lives at: demos/credential-supervisor/
+Scenario: [What is set up, what is triggered, what an observer sees happen]
+What it proves: [The specific claim from Goals that this demo makes visible]
+What it does not prove: [Explicitly scope out anything the demo doesn't cover, so it isn't oversold]
+Implementation Strategy
+Dependencies
+Do not use Terraform to manage Temporal Namespaces, Use Temporal CloudOpsAPI
+Temporal CloudOpsAPI client using the APIKey the CredentialOperations Worker is using
+Needs account-level write permissions to Temporal Namespaces to alter their CA
+temporalnamespace resources in Terraform should likely include
+lifecycle {
+  ignore_changes = [accepted_client_ca]
+}
+Vault must have pki enabled
+Phases
+Phase 1: [Name]
+
+Activate Credential Workflow for a given scope
+Credential Workflow exposes current expiration of Temporal Namespace and schedules a Rotation within RotationOffset duration.
+Credential Workflow exposes current Kubernetes Deployments that would be impacted by the CA using the KubernetesDeploymentSelectors
+Credential Workflow stays running
+Phase 2: [Name]
+
+Rotate Credential successfully
