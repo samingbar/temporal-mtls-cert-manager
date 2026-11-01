@@ -97,7 +97,7 @@ export async function rotateWorkflow(request: StartRotateRequest): Promise<GetRo
   try {
     const config = await fake.getFakeRotationConfig(request);
     holdCompensation = config.holdCompensation;
-    for (const name of ['issue', 'add-trust', 'rollout-clients', 'remove-old-trust', 'retire-old'] as const) {
+    for (const name of ['issue', 'add-trust', 'rollout-clients', 'verify-clients', 'remove-old-trust', 'retire-old'] as const) {
       if (revertRequested || cancelRequested) break;
       // A failed Activity result may follow a committed mutation, so compensate from before dispatch.
       workStarted = true;

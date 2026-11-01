@@ -4,6 +4,8 @@ Audience: platform engineers and operators evaluating the example locally. These
 
 Run commands from the repository root. Keep the local server and demo worker running while using the CLI. The fake adapter keeps external inventory in worker memory; stop all demo Credentials before restarting that worker. Its archive persists separately in `.credential-data/archive.sqlite`, or the file selected by `CREDENTIAL_ARCHIVE_PATH`.
 
+The steps below use the default fixture; leave `CREDENTIAL_REQUEST_FILE` unset for their exact identities and values. For an application-binding export, follow the [deployment guide](../../docs/deployment-guide.md). Existing executions pinned to `demo-v1` must finish on their original code; this revision starts new executions on `demo-v2`.
+
 ## Prepare and start
 
 1. Install dependencies and check the project with Node.js 22.13 or later.
@@ -50,7 +52,7 @@ Run commands from the repository root. Keep the local server and demo worker run
    npm run ctl -- state
    ```
 
-   Verify the Update returns `accepted: true`. That response acknowledges the queued request. Query until `rotationHistory` includes `maintenance-001` with `SUCCEEDED`; its steps should order `add-trust`, `rollout-clients`, `remove-old-trust`, then `retire-old`. The parent returns to `ACTIVE` after Continue-As-New.
+   Verify the Update returns `accepted: true`. That response acknowledges the queued request. Query until `rotationHistory` includes `maintenance-001` with `SUCCEEDED`; its steps should order `add-trust`, `rollout-clients`, `verify-clients`, `remove-old-trust`, then `retire-old`. The verification checks are simulated; no live connectivity is established. The parent returns to `ACTIVE` after Continue-As-New.
 
 2. Retry the same operation ID.
 
@@ -96,7 +98,7 @@ Run commands from the repository root. Keep the local server and demo worker run
    npm run ctl -- state
    ```
 
-   Verify the state reaches `ACTIVE` and the suspension is cleared. The demo CLI supplies the complete fixture activation request, so this command also restores its fixture scope and options. A custom client can supply the desired complete activation input instead.
+   Verify the state reaches `ACTIVE` and the suspension is cleared. The demo CLI supplies its complete configured activation request, so this command also restores that request's scope and options. Without `CREDENTIAL_REQUEST_FILE`, this is the fixture. A custom client can supply the desired complete activation input instead.
 
 3. Deactivate the Credential.
 

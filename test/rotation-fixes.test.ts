@@ -119,6 +119,47 @@ test('retirement failure after a scoped rollout compensates before the child rea
   });
 });
 
+for (const verification of [
+  { check: 'Deployment convergence', deploymentsConverged: false, newCredentialAccepted: true, failureType: 'FakeDeploymentNotConverged' },
+  { check: 'authenticated new-credential connectivity', deploymentsConverged: true, newCredentialAccepted: false, failureType: 'FakeClientConnectivityRejected' },
+]) {
+  test(`failed simulated ${verification.check} preserves old trust until compensation`, async () => {
+    const { deploymentsConverged, newCredentialAccepted, failureType } = verification;
+    const operationId = 'verification-failed';
+    let beforeVerification: ReturnType<Fake['inspect']> | undefined;
+    const input = {
+      ...request('verification', ['orders-dev', 'payments-dev', 'tagged-dev']),
+      kubernetesOptions: { enabled: true, deploymentSelectors: [{ namespace: 'apps', labelSelector: 'team=platform' }] },
+    };
+    await scenario([input], { clientVerification: { deploymentsConverged, newCredentialAccepted } }, async ([handle], fake) => {
+      await handle.executeUpdate(messages.rotate, { args: [{ ...actor, operationId }] });
+      const state = await waitState(handle, state => state.status === 'FAILED' && !state.activeRotation);
+      const summary = state.rotationHistory.find(item => item.operationId === operationId)!;
+      assert.equal(summary.status, 'FAILED');
+      assert.equal(summary.failure?.operationId, operationId);
+      assert.equal(summary.failure?.type, failureType);
+      assert.equal(summary.compensationStatus, 'SUCCEEDED');
+      assert(beforeVerification);
+      assert(beforeVerification.namespaces.every(item => item.trustedCAs.length === 2 && item.trustedCAs.includes('FAKE-CA-INITIAL') && item.trustedCAs.includes(item.clientCA)));
+      const inventory = fake.inspect();
+      assert.deepEqual(inventory.clientVerifications, [{ identity: state.identity, operationId, deploymentsConverged, newCredentialAccepted }]);
+      assert.deepEqual(inventory.events, ['issue', 'add-trust', 'rollout-clients', 'revert'].map(step => `FAKE ${step}: ${operationId}`));
+      assert(!summary.steps.some(step => step.includes('remove-old-trust') || step.includes('retire-old')));
+      assert.deepEqual(inventory.retiredCAs, []);
+      for (const namespace of inventory.namespaces) {
+        assert.equal(namespace.clientCA, 'FAKE-CA-INITIAL');
+        assert.deepEqual(namespace.trustedCAs, ['FAKE-CA-INITIAL']);
+      }
+    }, fake => {
+      const perform = fake.activities.performFakeRotationStep;
+      fake.activities.performFakeRotationStep = async input => {
+        if (input.step === 'verify-clients') beforeVerification = fake.inspect();
+        return perform(input);
+      };
+    });
+  });
+}
+
 test('a lost mutation response still triggers compensation once', async () => {
   await scenario([request('ambiguous', ['orders-dev', 'payments-dev', 'tagged-dev'])], {}, async ([handle], fake) => {
     await handle.executeUpdate(messages.rotate, { args: [{ ...actor, operationId: 'lost-rollout-response' }] });

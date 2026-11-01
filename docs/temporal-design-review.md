@@ -183,4 +183,21 @@ The related success-only history rollover finding is also addressed: rollover ca
 
 Verification after these changes: all 67 regression tests passed, including real Temporal tests for large successful and failed rotations. Additional focused unit checks cover environment configuration exceeding the effective-options byte limit. The archive CLI smoke test and local walkthrough also pass.
 
-The medium-severity stale-inventory failure race and the documented Workflow-ID naming ambiguity remain outside the requested high-severity fixes. The example still has fake PKI/Cloud/Kubernetes integrations and supplies no production availability guarantee; the SQLite archive is a single-host demonstration, not a multi-host production storage service. Recent diagnostic snapshots do not promise permanent archival of every Update outcome or nonrotation failure; Temporal Event History remains the authoritative execution record within its retention period.
+At the end of the high-severity fix pass, the medium-severity stale-inventory failure race and the documented Workflow-ID naming ambiguity remained unresolved. The subsequent review below addresses the stale-inventory race. The example still has fake PKI/Cloud/Kubernetes integrations and supplies no production availability guarantee; the SQLite archive is a single-host demonstration, not a multi-host production storage service. Recent diagnostic snapshots do not promise permanent archival of every Update outcome or nonrotation failure; Temporal Event History remains the authoritative execution record within its retention period.
+
+## Deployment integration review — November 1, 2026
+
+Current verdict: **approve_with_changes** for the orchestration example. Production readiness remains unproven.
+
+The orchestration sample is suitable for demonstrating a CA rollover pattern. It needs real adapter and pilot evidence before production deployment. The [deployment guide](deployment-guide.md) defines that boundary, separates leaf renewal from CA rollover, and describes a proposed handoff from existing application provisioning. It does not assert compatibility with an existing infrastructure module or account feature configuration.
+
+Additional changes:
+
+- **Stale-inventory failure race resolved:** `refreshInventory` now discards failures from superseded configuration revisions. Current-revision failures still pause the entity, and cancellation still propagates. Seven real Temporal regression cases cover the relevant boundaries.
+- **Explicit verification gate:** the fake child now checks separate simulated Deployment convergence and new-credential acceptance before removing old trust. Either failure blocks old-trust removal and retirement, then compensates. Two regression cases cover these independent failures. Live workload health and connectivity remain unproven.
+- **Configuration handoff:** every CLI command can read a bounded, validated request from `CREDENTIAL_REQUEST_FILE`. The loader rejects unknown fields and caller-supplied carryover; nine tests cover parsing, normalization, overrides, and admission failures. This is a proposed export contract, not a Terraform adapter or per-service certificate issuer.
+- **Replay boundary:** new demo executions use the pinned `demo-v2` build because the verification Activity changes command history. Existing pinned executions require their original code; no automatic migration or cross-host fake-state recovery is provided.
+
+The Workflow-ID naming ambiguity remains documented. Real issuance, namespace trust updates, certificate delivery, mixed-authentication eligibility, shared durable storage, and actual rolling deployment/connectivity checks remain integration work. API-key rotation and human-user certificate enrollment are outside the executable example.
+
+Validation: all 85 tests passed with no failures or skips. The updated automated walkthrough also passed. A separate CLI smoke check used the public request-file example to start a `demo-v2` execution, read its state, complete a verified fake rotation, deduplicate a repeated operation ID, and deactivate cleanly. These checks use isolated local Temporal servers and fake inventory; they provide no live infrastructure evidence.

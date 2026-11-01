@@ -4,6 +4,8 @@ A TypeScript example of the Credential Supervisor specification. A long-lived Te
 
 The production boundary is phase 1: contracts, option validation, and the Credential Workflow. The Rotate implementation and Activities under `demos/` use fake data so the example can run without Temporal Cloud, Kubernetes, Vault, certificates, or private keys. They demonstrate orchestration and trust ordering; they do not establish that a production rollover will avoid downtime.
 
+For adoption into existing provisioning and application bindings, start with the [deployment guide](docs/deployment-guide.md). It covers the configuration-file handoff, Terraform ownership, separate leaf renewal and CA rollover lifecycles, namespace authentication prerequisites, SDK credential loading, and the evidence required from a real pilot.
+
 ## Run it
 
 Use Node.js 22.13 or later.
@@ -59,7 +61,7 @@ Use `npm run ctl -- archive [limit] [offset]` to inspect archived history in pag
 
 ## Production integrations still required
 
-The concrete Rotate implementation must establish new namespace trust while retaining old trust, roll out client credentials, verify that rollout, remove old namespace trust, and retire the old material. Compensation belongs to that child. The fake child compensates ordinary failures after a possible mutation before returning `FAILED`, and preserves the original failure. If compensation fails, the child remains open for Queries and later restore requests, with a separate compensation failure. A bounded wait that expires is an unresolved outcome, not evidence that compensation finished.
+The concrete Rotate implementation must establish new namespace trust while retaining old trust, roll out client credentials, verify both deployment convergence and authenticated connectivity, remove old namespace trust, and retire the old material. The fake child includes an explicit `verify-clients` gate with separate simulated checks; either failure blocks old-trust removal and retirement and initiates compensation. Compensation belongs to that child. It compensates ordinary failures after a possible mutation before returning `FAILED`, and preserves the original failure. If compensation fails, the child remains open for Queries and later restore requests, with a separate compensation failure. A bounded wait that expires is an unresolved outcome, not evidence that compensation finished.
 
 Future adapters need to read and update namespace trust through the Temporal Cloud Operations API, integrate with the chosen PKI, and access the local Kubernetes cluster through an appropriate service account. The supplied Vault path uses Vault PKI and Vault Secrets Operator: VSO reissues workload Secrets and restarts its configured Deployment targets; the worker verifies the resulting rollout. Those integrations, permissions, deployment manifests, and production Worker registration are outside this example. No real RBAC resources or manifests are deployed.
 
@@ -76,8 +78,11 @@ A fake inventory cannot verify live client connectivity, CA propagation, workloa
 | `src/limits.ts` | Payload, queue, and retention bounds |
 | `src/workflows/` | Credential orchestration |
 | `demos/credential-supervisor/` | Fake adapters, fake Rotate child, demo worker, and CLI |
+| `demos/credential-supervisor/application-binding.example.json` | Metadata-only request accepted through `CREDENTIAL_REQUEST_FILE` |
+| `demos/credential-supervisor/connection-examples.ts` | SDK configuration helpers for separate mTLS and API-key connections |
 | `test/` | Option and Workflow checks |
 | `runbooks/credential-supervisor/` | Operator actions and verification |
+| `docs/deployment-guide.md` | Provisioning handoff, rollout gates, migration prerequisites, and pilot acceptance |
 | `docs/source-specification.txt` | The supplied specification |
 
 ## Temporal references

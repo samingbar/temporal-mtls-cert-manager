@@ -1,0 +1,19 @@
+{
+  "credentialType": "certificate",
+  "environment": "dev",
+  "teamName": "platform",
+  "scopeKey": "binding-demo",
+  "credentialOptions": {
+    "ttlMs": 7776000000,
+    "rotationOffsetMs": 1209600000
+  },
+  "temporalNamespaceOptions": {
+    "names": ["orders-dev", "payments-dev"],
+    "tagSelector": { "team": "platform", "environment": "dev" }
+  },
+  "kubernetesOptions": {
+    "enabled": true,
+    "deploymentSelectors": [{ "namespace": "apps", "labelSelector": "team=platform" }]
+  },
+  "executionOptions": { "rotationTimeoutMs": 30000 }
+}

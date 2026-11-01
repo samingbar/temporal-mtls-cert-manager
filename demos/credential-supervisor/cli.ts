@@ -1,13 +1,14 @@
 import { Client, Connection } from '@temporalio/client';
-import type { ActivateCertificateRequest, PutOptionsRequest } from '../../src/contracts';
+import type { PutOptionsRequest } from '../../src/contracts';
 import { activate, deactivate, getState, putOptions, putTemporalNamespaces, restore, rotate, suspend } from '../../src/messages';
 import { credentialWorkflowId } from '../../src/options';
-import { DEMO_DEPLOYMENT, DEMO_REQUEST, DEMO_TASK_QUEUE } from './fixtures';
+import { DEMO_DEPLOYMENT, DEMO_TASK_QUEUE } from './fixtures';
 import { startPinnedCredential } from './start-pinned';
 import { createCredentialArchiveStore } from './archive-store';
+import { loadCredentialRequest } from './request-input';
 
 const usage = `Usage: npm run ctl -- <command> [arguments]
-  start                         Start the Credential with complete demo input
+  start                         Start with the demo input or CREDENTIAL_REQUEST_FILE
   state [--failures]            Show inventory, options, history and optional errors
   archive [limit] [offset]       Read a page of durable history for this Credential
   rotate <operation-id>         Queue one manual rollover (reuse ID when retrying)
@@ -20,6 +21,8 @@ const usage = `Usage: npm run ctl -- <command> [arguments]
 
 Environment: TEMPORAL_ADDRESS=localhost:7233 TEMPORAL_NAMESPACE=default
   CREDENTIAL_ENVIRONMENT=dev CREDENTIAL_TEAM=platform CREDENTIAL_SCOPE=demo
+  CREDENTIAL_REQUEST_FILE=path/to/application-binding.json (optional, metadata only)
+Identity overrides apply after the request file and to every command.
 Requires the fake worker and a local Temporal server. No real PKI or cloud calls.`;
 
 function positiveNumber(value: string | undefined, name: string, allowZero = false): number {
@@ -31,12 +34,7 @@ function positiveNumber(value: string | undefined, name: string, allowZero = fal
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (!command || command === 'help' || command === '--help') { console.log(usage); return; }
-  const request: ActivateCertificateRequest = {
-    ...structuredClone(DEMO_REQUEST),
-    environment: process.env.CREDENTIAL_ENVIRONMENT ?? DEMO_REQUEST.environment,
-    teamName: process.env.CREDENTIAL_TEAM ?? DEMO_REQUEST.teamName,
-    scopeKey: process.env.CREDENTIAL_SCOPE ?? DEMO_REQUEST.scopeKey,
-  };
+  const request = await loadCredentialRequest();
   if (command === 'archive') {
     const archive = createCredentialArchiveStore();
     try {

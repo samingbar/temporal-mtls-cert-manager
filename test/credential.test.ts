@@ -102,7 +102,8 @@ test('manual rotation preserves trust order, continues as new, and deduplicates 
     const duplicate = await handle.executeUpdate(messages.rotate, { args: [{ ...actor, operationId: 'manual-1' }] });
     assert.equal(duplicate.duplicate, true);
     assert.equal((await handle.query(messages.getState, {})).state.rotationHistory.length, 1);
-    assert.deepEqual(fake.inspect().events, ['issue', 'add-trust', 'rollout-clients', 'remove-old-trust', 'retire-old'].map(step => `FAKE ${step}: manual-1`));
+    assert.deepEqual(fake.inspect().events, ['issue', 'add-trust', 'rollout-clients', 'verify-clients', 'remove-old-trust', 'retire-old'].map(step => `FAKE ${step}: manual-1`));
+    assert.deepEqual(fake.inspect().clientVerifications, [{ identity: state.identity, operationId: 'manual-1', deploymentsConverged: true, newCredentialAccepted: true }]);
     for (const namespace of fake.inspect().namespaces) assert.deepEqual(namespace.trustedCAs, [namespace.clientCA]);
     await handle.executeUpdate(messages.deactivate, { args: [actor] });
     await handle.result();

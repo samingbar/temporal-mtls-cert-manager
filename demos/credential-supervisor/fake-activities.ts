@@ -2,7 +2,7 @@ import type { Client } from '@temporalio/client';
 import { createHash } from 'node:crypto';
 import { ApplicationFailure } from '@temporalio/common';
 import type {
-  CredentialActivities, GetTemporalNamespaceCertificatesRequest, StartRotateRequest,
+  CredentialActivities, CredentialIdentity, GetTemporalNamespaceCertificatesRequest, StartRotateRequest,
 } from '../../src/contracts';
 import { revert } from '../../src/messages';
 import { mergeEffectiveOptions } from '../../src/options';
@@ -10,8 +10,11 @@ import type { CredentialArchiveActivities } from '../../src/archive-contracts';
 import { createCredentialArchiveStore } from './archive-store';
 
 export type FakeRotationMode = 'complete' | 'hold' | 'hold-after-rollout' | 'fail';
-export type FakeRotationStep = 'issue' | 'add-trust' | 'rollout-clients' | 'remove-old-trust' | 'retire-old' | 'revert';
+export type FakeRotationStep = 'issue' | 'add-trust' | 'rollout-clients' | 'verify-clients' | 'remove-old-trust' | 'retire-old' | 'revert';
 export interface FakeRotationConfig { mode: FakeRotationMode; stepDelayMs: number; holdCompensation: boolean }
+/** Injected simulation facts; no Deployment is inspected and no authenticated request is sent. */
+export interface FakeClientVerification { deploymentsConverged: boolean; newCredentialAccepted: boolean }
+export interface FakeClientVerificationRecord extends FakeClientVerification { identity: CredentialIdentity; operationId: string }
 export interface FakeRotationStepRequest { request: StartRotateRequest; step: FakeRotationStep }
 export interface FakeRotationStepResponse { description: string }
 export interface FakeWorkflowActivities {
@@ -30,6 +33,7 @@ export interface FakeInventorySnapshot {
   namespaces: FakeNamespace[];
   retiredCAs: string[];
   events: string[];
+  clientVerifications: FakeClientVerificationRecord[];
 }
 export interface FakeActivityOptions {
   client?: Client;
@@ -42,6 +46,8 @@ export interface FakeActivityOptions {
   initialNotAfterMs?: number;
   /** Optional fully specified seed inventory for focused scenarios. */
   namespaces?: FakeNamespace[];
+  /** Independent simulated readiness and connectivity facts for the verification gate. */
+  clientVerification?: FakeClientVerification;
 }
 
 const INITIAL_CA = 'FAKE-CA-INITIAL';
@@ -65,6 +71,8 @@ export function createFakeActivities(options: FakeActivityOptions = {}) {
   const records = new Map<string, FakeNamespace>();
   const retiredCAs = new Set<string>();
   const events: string[] = [];
+  const clientVerifications: FakeClientVerificationRecord[] = [];
+  const simulatedVerification = structuredClone(options.clientVerification ?? { deploymentsConverged: true, newCredentialAccepted: true });
   const operations = new Map<string, {
     old: Map<string, { trustedCAs: string[]; clientCA: string; notAfterMs: number }>;
     newCA: string;
@@ -160,7 +168,27 @@ export function createFakeActivities(options: FakeActivityOptions = {}) {
             record.clientCA = operation.newCA;
           }
           break;
+        case 'verify-clients': {
+          // These separate fixture facts model two required checks, not production evidence.
+          const verification: FakeClientVerificationRecord = {
+            identity: structuredClone(request.identity), operationId: request.operationId,
+            deploymentsConverged: simulatedVerification.deploymentsConverged,
+            newCredentialAccepted: simulatedVerification.newCredentialAccepted,
+          };
+          clientVerifications.push(verification);
+          if (verification.deploymentsConverged !== true) {
+            throw ApplicationFailure.nonRetryable('Simulated Deployment rollout has not converged; old CA trust must remain', 'FakeDeploymentNotConverged');
+          }
+          if (verification.newCredentialAccepted !== true) {
+            throw ApplicationFailure.nonRetryable('Simulated authenticated connection using the new credential was rejected; old CA trust must remain', 'FakeClientConnectivityRejected');
+          }
+          if (namespaces.some(record => record.clientCA !== operation.newCA || !record.trustedCAs.includes(operation.newCA))) {
+            throw ApplicationFailure.nonRetryable('Fake clients do not use a trusted new credential', 'UnsafeFakeRotation');
+          }
+          break;
+        }
         case 'remove-old-trust':
+          if (!operation.completed.has('verify-clients')) throw ApplicationFailure.nonRetryable('Cannot remove fake old trust before client verification', 'UnsafeFakeRotation');
           for (const record of namespaces) {
             if (record.clientCA !== operation.newCA) throw ApplicationFailure.nonRetryable('Cannot remove fake old trust before client rollout', 'UnsafeFakeRotation');
             record.trustedCAs = [operation.newCA];
@@ -196,7 +224,7 @@ export function createFakeActivities(options: FakeActivityOptions = {}) {
     close() { archive.close(); },
     setRotationMode(mode: FakeRotationMode, stepDelayMs = config.stepDelayMs) { config = { ...config, mode, stepDelayMs }; },
     inspect(): FakeInventorySnapshot {
-      return structuredClone({ adapter: 'FAKE — in-memory only' as const, namespaces: [...records.values()].sort((a, b) => a.name.localeCompare(b.name)), retiredCAs: [...retiredCAs].sort(), events });
+      return structuredClone({ adapter: 'FAKE — in-memory only' as const, namespaces: [...records.values()].sort((a, b) => a.name.localeCompare(b.name)), retiredCAs: [...retiredCAs].sort(), events, clientVerifications });
     },
   };
 }

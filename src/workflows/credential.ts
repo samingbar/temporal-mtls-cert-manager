@@ -304,10 +304,19 @@ export async function credentialWorkflow(request: C.ActivateCertificateRequest):
   const refreshInventory = async (): Promise<boolean> => {
     const revision = state.revision;
     const options = copy(state.options!);
-    const [namespaces, deployments] = await Promise.all([
-      activities.getTemporalNamespaceCertificates({ identity: copy(identity), temporalNamespaceOptions: options.temporalNamespaces }),
-      activities.getKubernetesDeployments({ identity: copy(identity), kubernetesOptions: options.kubernetes }),
-    ]);
+    let inventory: [C.GetTemporalNamespaceCertificatesResponse, C.GetKubernetesDeploymentsResponse];
+    try {
+      inventory = await Promise.all([
+        activities.getTemporalNamespaceCertificates({ identity: copy(identity), temporalNamespaceOptions: options.temporalNamespaces }),
+        activities.getKubernetesDeployments({ identity: copy(identity), kubernetesOptions: options.kubernetes }),
+      ]);
+    } catch (error) {
+      // An obsolete scope can fail after the operator has already corrected it.
+      // Keep native cancellation and failures of the current configuration authoritative.
+      if (isCancellation(error) || revision === state.revision) throw error;
+      return false;
+    }
+    const [namespaces, deployments] = inventory;
     // Scope may change while I/O runs. Never decide or start a child from stale scope.
     if (revision !== state.revision) return false;
     assertPayloadSize(namespaces, LIMITS.inventoryBytes, 'Namespace inventory');

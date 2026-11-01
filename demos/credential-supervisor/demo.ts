@@ -70,14 +70,18 @@ export async function runDemo(): Promise<void> {
       await eventually(() => handle.describe(), description => description.runId !== beforeSuccessRunId, 'new run after successful rotation');
       const summary = completed.rotationHistory.find(item => item.operationId === second.operationId)!;
       assert.deepEqual(summary.namespaceNames, ['orders-dev', 'payments-dev', 'tagged-dev']);
-      assert.deepEqual(summary.steps, ['issue', 'add-trust', 'rollout-clients', 'remove-old-trust', 'retire-old'].map(step => `FAKE ${step}: ${second.operationId}`));
+      assert.deepEqual(summary.steps, ['issue', 'add-trust', 'rollout-clients', 'verify-clients', 'remove-old-trust', 'retire-old'].map(step => `FAKE ${step}: ${second.operationId}`));
+      assert.deepEqual(fake.inspect().clientVerifications, [{
+        identity: completed.identity, operationId: second.operationId,
+        deploymentsConverged: true, newCredentialAccepted: true,
+      }]);
       const rotated = fake.inspect().namespaces.find(item => item.name === 'orders-dev')!;
       assert.deepEqual(rotated.trustedCAs, [rotated.clientCA]);
       assert.notEqual(rotated.clientCA, 'FAKE-CA-INITIAL');
       assert.equal(rotated.clientCA, rotated.trustedCAs[0]);
       assert(fake.inspect().namespaces.every(item => item.clientCA === rotated.clientCA && item.trustedCAs.length === 1));
       assert(fake.inspect().retiredCAs.includes('FAKE-CA-INITIAL'));
-      console.log('\nSUCCEEDED: full scope restored, old trust removed after client rollout, old CA retired.');
+      console.log('\nSUCCEEDED: full scope restored; simulated Deployment convergence and new-credential acceptance passed before old trust removal and CA retirement.');
       for (const step of summary.steps) console.log(`  ${step}`);
       const duplicate = await handle.executeUpdate(rotate, { args: [second], updateId: 'retry-demo-success-002' });
       assert(duplicate.duplicate);
